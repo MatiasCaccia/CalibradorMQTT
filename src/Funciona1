@@ -1,0 +1,105 @@
+//#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <time.h>
+#include <TimeLib.h>
+
+// Constantes de MQTT
+const char* mqtt_server = "192.168.4.2";
+const int mqtt_port = 1883;
+const char* mqtt_topic = "Sensor";
+const char* sync_topic = "Sincro";
+
+// HOTSPOT WiFi
+const char* ap_ssid = "ESP32_HOTSPOT";
+const char* ap_password = "12345678";
+IPAddress ap_ip(192, 168, 4, 1);
+IPAddress netmask(255, 255, 255, 0);
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// LED incluido 
+const int ledPin = 2; // Built-in LED on pin 2
+
+// Sincronizar
+bool synced = false;  // Flag para indicar la sincronia
+unsigned long sync_time;  // Time of last synchronization message
+
+void callback(char *topic, byte *payload, unsigned int length);
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("------------------------");
+  // Configuración del hotspot
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(ap_ip, ap_ip, netmask);
+  WiFi.softAP(ap_ssid, ap_password);
+  Serial.println("------------------------");
+  Serial.print("SoftAP IP address: ");
+  Serial.println(WiFi.softAPIP());
+  delay(2500); // Delay para que se conecte el broker
+  // Setear el pin LED como salida
+  pinMode(ledPin, OUTPUT);
+
+  // Configuración MQTT
+  client.setServer(mqtt_server, mqtt_port); //Conexión al broker
+  client.setCallback(callback); //Manejo de señal
+  while (!client.connected()) {
+    Serial.println("Connecting to MQTT broker...");
+    if (client.connect("ESP32Client")) {
+      Serial.println("MQTT connected");
+    } else {
+      Serial.print("MQTT failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" retrying in 5 seconds...");
+      delay(5000);
+    }
+  }
+}
+
+void loop() {
+  if (!synced) {
+    Serial.println("Esperando la sincronía");
+    return; 
+  }
+  digitalWrite(ledPin, HIGH); // Turn the LED on
+  client.publish(mqtt_topic, "led_on");
+  delay(1000); // Wait for 1 second
+  digitalWrite(ledPin, LOW); // Turn the LED off
+  client.publish(mqtt_topic, "led_off");
+  delay(1000); // Wait for 1 second
+  client.loop();
+}
+
+/// ----------------
+/// FUNCION CALLBACK
+/// ----------------
+void callback(char* topic, byte* payload, unsigned int length) {
+  // Si llega información al tópico suscrito, se setea el reloj interno
+  if (strcmp(topic, sync_topic) == 0) {
+    // Obtener el tiempo en epoch del paquete en el topico Sincro
+    String time_str = "";
+    for (int i = 0; i < length; i++) {
+      time_str += (char)payload[i];
+    }
+    time_t time_value = atol(time_str.c_str());
+
+    // Configurar el reloj interno con el epoch recibido
+    setTime(time_value);
+
+    // Setear el flag de sincronizado
+    synced = true;
+    sync_time = millis();
+    Serial.println("Mensaje Recibido");
+    
+    // Frenar la publicación de información si recibo un 0
+    if(time_value == 0){
+      synced = false;
+      Serial.println("Alto");
+    }
+  }
+}
+
